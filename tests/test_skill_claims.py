@@ -408,3 +408,179 @@ def test_41_errors_builderror_when_a_value_is_out_of_range():
     raises(BuildError, lambda: T(a=300).pack())
 
 
+# ------------------------------------------------- counts, lengths and offsets
+def test_42_rule_length_expressions_use_arithmetic_on_earlier_int_fields():
+    """rule: a length slot takes an expression over earlier integer fields"""
+    class T(Binary, endian="<"):
+        n: u8
+        d: Bytes["n * 2 + 1"]
+    assert T.unpack(b"\x01abc").d == b"abc"
+
+
+def test_43_rule_padding_and_bits_take_a_literal_int_only():
+    """rule: Padding[3] and Bits[4] take a literal int only"""
+    def pad():
+        class T(Binary, endian="<"):
+            n: u8
+            p: Padding["n"]
+    def bits():
+        class T(Binary, endian="<"):
+            n: u8
+            b: Bits["n"]
+    raises(LayoutError, pad, "non-negative int")
+    raises(LayoutError, bits, "at least 1 bit")
+
+
+def test_44_rule_a_variable_gap_is_spelled_as_bytes_not_padding():
+    """rule: for a variable gap use Bytes["off - 8"]"""
+    class T(Binary, endian="<"):
+        off: u32
+        gap: Bytes["off - 8"]
+        v:   u8
+    assert T.unpack(struct.pack("<I", 10) + b"XX\x07").v == 7
+
+
+def test_45_rule_the_expression_grammar_excludes_division_and_calls():
+    """rule: grammar is + - * // % & | ^ ~ << >>, no /"""
+    def bad():
+        class T(Binary, endian="<"):
+            n: u8
+            d: Bytes["n / 2"]
+    raises(LayoutError, bad, "may only use earlier field names")
+
+
+def test_46_rule_a_reference_must_name_an_integer_field():
+    """rule: names must be integer fields (u*, i*, Bits)"""
+    def bad():
+        class T(Binary, endian="<"):
+            n: f32
+            d: Bytes["n"]
+    raises(LayoutError, bad, "not an integer field")
+
+    class Ok(Binary, endian=">"):        # Bits counts as an integer field
+        a: Bits[4]
+        b: Bits[4]
+        d: Bytes["a"]
+    assert Ok.unpack(b"\x20xy").d == b"xy"
+
+
+def test_47_rule_a_nested_struct_cannot_see_its_parent_s_fields():
+    """rule: no dotted paths -- a nested struct cannot see its parent's fields"""
+    def bad():
+        class Inner(Binary, endian="<"):
+            d: Bytes["n"]
+    raises(LayoutError, bad, "not a field declared before this one")
+
+
+def test_48_rule_there_is_no_greedy_array():
+    """rule: Bytes[...]/Str[...] run to the end of the buffer; Array does not"""
+    class T(Binary, endian="<"):
+        a: Str[2]
+        b: Bytes[...]
+    assert T.unpack(b"hi!!").b == b"!!"
+
+    def bad():
+        class U(Binary, endian="<"):
+            a: Array[u8, ...]
+    raises(LayoutError, bad, "a count is required")
+
+
+# ------------------------------------------------------------------- pointers
+def test_49_rule_a_pointer_may_target_a_struct_or_an_array():
+    """rule: a Pointer target may be a scalar, struct or Array"""
+    class Rec(Binary, endian="<"):
+        v: u8
+    class T(Binary, endian="<"):
+        n:   u8
+        off: u32
+        r:   Pointer["off", Array[Rec, "n"]]
+    t = T(n=2, r=[Rec(v=1), Rec(v=2)])
+    assert [r.v for r in T.unpack(t.pack()).r] == [1, 2]
+
+
+def test_50_rule_a_pointer_may_not_target_if_switch_pointer_or_checksum():
+    """rule: a Pointer may not target If/Switch/Pointer/Checksum"""
+    for inner in ("If['k > 0', u8]", "Switch['k', {1: u8}]"):
+        src = ("class T(Binary, endian='<'):\n"
+               "    k:   u8\n"
+               "    off: u32\n"
+               f"    d:   Pointer['off', {inner}]\n")
+        raises(LayoutError, lambda s=src: exec(s, dict(vars(pybinary))), "cannot target")
+
+
+def test_51_rule_a_pointer_cannot_coexist_with_a_rest_of_buffer_field():
+    """rule: a struct holding a pointer may not also use Bytes[...]"""
+    def bad():
+        class T(Binary, endian="<"):
+            off: u32
+            d:   Pointer["off", u8]
+            r:   Bytes[...]
+    raises(LayoutError, bad, "cannot coexist with a pointer")
+
+
+def test_52_rule_a_pointer_turns_off_the_trailing_bytes_check():
+    """rule: a struct holding a pointer stops rejecting trailing bytes"""
+    class T(Binary, endian="<"):
+        off: u32
+        v:   Pointer["off", u8]
+    raw = T(v=7).pack()
+    assert T.unpack(raw + b"\xaa\xbb").v == 7      # no ParseError
+
+
+# ---------------------------------------------------- describe() and the rest
+def test_53_rule_describe_marks_unknowns_and_names_the_kind():
+    """rule: describe() shows ? for parse-time values, and pointer as the kind"""
+    class T(Binary, endian="<"):
+        off: u32
+        v:   Pointer["off", u8]
+    lines = T.describe().splitlines()
+    assert lines[0] == "T  endian='<'  (variable)"
+    assert lines[2].split() == ["0", "4", "off", "u32"]
+    assert lines[3].split() == ["4", "?", "v", "pointer"]
+
+
+def test_54_rule_pack_into_appends_to_a_bytearray_and_returns_it():
+    """rule: inst.pack_into(bytearray) appends"""
+    class T(Binary, endian="<"):
+        v: u8
+    out = bytearray(b"HDR")
+    assert T(v=5).pack_into(out) is out
+    assert bytes(out) == b"HDR\x05"
+
+
+def test_55_rule_a_scalar_array_is_a_tuple_and_a_struct_array_is_a_list():
+    """rule: a scalar Array parses to a tuple, a struct Array to a list"""
+    class Rec(Binary, endian="<"):
+        v: u8
+    class T(Binary, endian="<"):
+        a: Array[u16, 2]
+        b: Array[Rec, 2]
+    t = T.unpack(struct.pack("<2H", 1, 2) + b"xy")
+    assert isinstance(t.a, tuple) and isinstance(t.b, list)
+
+
+def test_56_rule_str_lengths_count_bytes_and_nuls_are_kept():
+    """rule: Str lengths count bytes, and NULs are kept"""
+    class T(Binary, endian="<"):
+        s: Str[4]
+    assert T.unpack("€".encode() + b"\x00").s == "€\x00"    # 3 utf-8 bytes + NUL
+
+
+def test_57_rule_endian_is_fixed_at_class_creation():
+    """rule: endian= is fixed at class creation -- a BOM format needs two trees"""
+    ann = {"__annotations__": {"v": u16}}
+    little = type("L", (Binary,), dict(ann), endian="<")
+    big    = type("B", (Binary,), dict(ann), endian=">")
+    assert little(v=1).pack() == b"\x01\x00"
+    assert big(v=1).pack() == b"\x00\x01"
+    assert not hasattr(Binary, "with_endian")   # no runtime switch exists
+
+
+def test_58_rule_introspection_attributes_exist():
+    """rule: cls.fields(), cls.__struct_size__, cls.__codec_source__"""
+    class T(Binary, endian="<"):
+        a: u8
+        b: u16
+    assert [f.name for f in T.fields()] == ["a", "b"]
+    assert T.__struct_size__ == 3
+    assert "def _unpack_view" in T.__codec_source__

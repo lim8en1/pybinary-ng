@@ -7,6 +7,8 @@ description: Declarative binary structures for Python that compile to specialize
 
 Fields are plain annotations. Python 3.13+.
 
+Install with: `uv pip install https://github.com/lim8en1/pybinary-ng.git`
+
 ```python
 import zlib
 from pybinary import Binary, Bytes, Checksum, u32
@@ -45,7 +47,39 @@ Rules:
   annotation is built, so pybinary silently sees a different condition.
 - Define variant and nested classes *before* the class using them.
 - `pack()` fills in a length referenced by exactly one field by bare name, and pointer offsets.
-- `Chunk.describe()` tabulates offsets, sizes and types — check a layout against a hex dump.
+
+The slots taking an expression are `Bytes`/`Str` length, `Array` count, `Pointer` offset, `If`
+condition and `Switch` tag:
+- Names must be **integer** fields (`u*` `i*` `Bits`) declared *earlier in the same class*, or in a
+  base. No dotted paths — a nested struct cannot see its parent's fields.
+- Grammar: names, int literals, `+ - * // % & | ^ ~ << >>`. No `/`, no calls; `If` adds comparisons.
+- `Padding[3]` and `Bits[4]` take a **literal int only**; for a variable gap use `Bytes["off - 8"]`.
+- `Bytes[...]`/`Str[...]` run to the end of the buffer. There is no greedy `Array`.
+
+A `Pointer` offset counts from the start of *this record*, so at the top level it is the file
+offset. Its target may be a scalar, struct or `Array`, not `If`/`Switch`/`Pointer`/`Checksum`.
+`pack()` appends the target and patches the offset only when the offset is a bare name used by one
+pointer; any other expression must already agree. A struct holding a pointer may not also use
+`Bytes[...]`, and its `unpack()` stops rejecting trailing bytes.
+
+`describe()` checks a layout against a hex dump. `?` = known only at parse time, and
+`If`/`Switch`/`Pointer`/`Checksum` rows show just the kind:
+
+```text
+Ptr  endian='<'  (variable)
+  off  size  field  type
+    0     4  off    u32
+    4     ?  v      pointer
+```
+
+Also: `inst.pack_into(bytearray)` appends · `cls.fields()`, `cls.__struct_size__`,
+`cls.__codec_source__` · `unpack(buf, copy=False)` gives `Bytes` as memoryviews over `buf`. A
+scalar `Array` parses to a tuple, a struct `Array` to a list. `Str` lengths count **bytes**, and
+NULs are kept.
+
+Not available: enums, alignment, seek/tell, untagged unions, streaming, greedy `Array`, and a
+runtime-chosen byte order — `endian=` is fixed at class creation, so a format with a byte-order
+mark (TIFF `II`/`MM`) needs one class tree per order.
 
 Errors: `LayoutError` at class creation · `ParseError` (truncation, `Const`/checksum mismatch, unknown
 discriminator, trailing bytes) · `BuildError` (length or offset disagrees, value out of range).

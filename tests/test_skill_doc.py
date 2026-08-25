@@ -18,9 +18,12 @@ TEXT = SKILL.read_text()
 
 # The prompt budget SKILL.md exists to respect. Chars/3.6 is a deliberate
 # over-estimate of the token count, so passing here means passing in practice.
-# The design target is 300-700; 1000 is the hard cap. Failing at the target is
-# deliberate -- it forces a scrutiny pass whenever a row is added.
-TOKEN_BUDGET = 700
+# The design target is 900-1300, and 1300 is the hard cap. The earlier 700 bought
+# brevity by leaving out which slots accept an expression, what a Pointer offset
+# is relative to, and what describe() prints -- so a model had to read the source
+# to write a real format, which costs far more than the lines saved. Failing at
+# the cap is deliberate: it forces a scrutiny pass whenever a row is added.
+TOKEN_BUDGET = 1300
 
 
 def _code_blocks():
